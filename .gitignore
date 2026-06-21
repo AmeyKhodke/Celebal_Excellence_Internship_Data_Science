@@ -1,0 +1,55 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments
+env/
+venv/
+.venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# VS Code
+.vscode/
+
+# Local hidden folders to ignore
+.lh/
+
+# Pytest
+.pytest_cache/
+
+# IDEs
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+
+# Python virtualenv
+.Python
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Mypy
+.mypy_cache/
+
+# Coverage
+htmlcov/
+.coverage
