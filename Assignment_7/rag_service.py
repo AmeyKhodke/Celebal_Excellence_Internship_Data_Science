@@ -1,3 +1,5 @@
+# RAG Pipeline from scratch for better understanding 
+# Developer - Amey Khodke
 import io
 import os
 import re
@@ -430,7 +432,7 @@ Summary:"""
         print(f"LLM summarization failed ({e}). Using fallback extractive summary.")
         return build_fallback_summary(text)
 
-# Maintain legacy pipeline alias for backward compatibility just in case
+# Maintain the pipeline
 def pipeline(document, query=None):
     ingested = ingest_document(document)
     if query is None:
