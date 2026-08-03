@@ -9,6 +9,9 @@ import pypdf
 import docx
 from requests.exceptions import RequestException
 from sentence_transformers import SentenceTransformer
+from huggingface_hub.utils import disable_progress_bars
+
+disable_progress_bars()
 
 BASE_PATH = "E:/B TECH IT/Celebal Internship/Assignment_7"
 ENV_PATH = Path(f"{BASE_PATH}/.env")
@@ -213,9 +216,71 @@ def extract_context(results):
             flattened.append(str(item))
     return clean_context_text(" ".join(flattened))
 
+def call_groq_api(prompt, temperature=0.0):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not found in environment.")
+        
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    models = ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
+    last_err = None
+    for model in models:
+        try:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": temperature,
+                "max_tokens": 1024
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            response.raise_for_status()
+            res_json = response.json()
+            return res_json["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            last_err = e
+            print(f"Groq API error for model {model}: {e}")
+            continue
+    raise last_err
+
+def generate_llm_response(prompt, temperature=0.0, timeout=30):
+    # Tier 1: Try Groq API
+    if os.getenv("GROQ_API_KEY"):
+        try:
+            return call_groq_api(prompt, temperature=temperature)
+        except Exception as e:
+            print(f"Groq API failed: {e}. Falling back to local Ollama.")
+    else:
+        print("GROQ_API_KEY not configured in environment. Trying local Ollama.")
+        
+    # Tier 2: Try local Ollama
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "gemma:2b",
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": temperature
+                }
+            },
+            timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()["response"].strip()
+    except Exception as e:
+        raise RuntimeError(f"Ollama local service failed or not reachable: {e}")
+
 def context_retrieval(query, context):
     """
-    Routs context + query to Ollama's Gemma:2b with a stricter system instruction format
+    Routes context + query to LLM (Groq or Ollama) with a stricter system instruction format
     to prevent it from ignoring the document content.
     """
     prompt = f"""Instructions: You are a strict factual assistant. Answer the Question based ONLY on the provided Context. 
@@ -228,21 +293,9 @@ Question: {query}
 Answer:"""
 
     try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "gemma:2b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.0  # Force model to stay completely factual to the prompt
-                }
-            },
-            timeout=30
-        )
-        return response.json()["response"].strip()
+        return generate_llm_response(prompt, temperature=0.0, timeout=30)
     except Exception as e:
-        print(f"Ollama not reachable ({e}). Attempting internal fallback scoring algorithm.")
+        print(f"LLM generation failed ({e}). Attempting internal fallback scoring algorithm.")
         return build_fallback_answer(query, context)
 
 def build_fallback_answer(query, context):
@@ -350,7 +403,7 @@ def build_fallback_summary(text):
 
 def summarize_document(ingested_data):
     """
-    Summarizes the ingested document using Ollama gemma:2b, with a heuristic fallback.
+    Summarizes the ingested document using LLM (Groq or Ollama), with a heuristic fallback.
     """
     if not ingested_data or not ingested_data.get("text"):
         return "No document text available to summarize."
@@ -372,21 +425,9 @@ Document:
 Summary:"""
 
     try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "gemma:2b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.3
-                }
-            },
-            timeout=45
-        )
-        return response.json()["response"].strip()
+        return generate_llm_response(prompt, temperature=0.3, timeout=45)
     except Exception as e:
-        print(f"Ollama summarization failed or not reachable ({e}). Using fallback extractive summary.")
+        print(f"LLM summarization failed ({e}). Using fallback extractive summary.")
         return build_fallback_summary(text)
 
 # Maintain legacy pipeline alias for backward compatibility just in case
