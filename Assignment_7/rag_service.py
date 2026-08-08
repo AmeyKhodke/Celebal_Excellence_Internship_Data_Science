@@ -55,32 +55,49 @@ def document_loader(file_path):
     return text
 
 def chunk_text(text, chunk_size=1000, overlap=150):
-    """
-    Optimized chunk size. 2000 characters was too large for short documents,
-    diluting context. 1000 provides much tighter, query-relevant context chunks.
-    """
+    if not text:
+        return []
+        
     chunks = []
-    paragraphs = re.split(r'\n\s*\n', text)
-    current_chunk = ""
+    # Normalize line breaks
+    text = re.sub(r'\r\n', '\n', text)
     
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-        if len(current_chunk) + len(para) > chunk_size:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                overlap_text = current_chunk[-overlap:]
-                current_chunk = overlap_text + " " + para
-            else:
-                chunks.append(para)
-                current_chunk = ""
-        else:
-            current_chunk = current_chunk + " " + para if current_chunk else para
+    start = 0
+    text_len = len(text)
+    
+    while start < text_len:
+        end = start + chunk_size
+        if end >= text_len:
+            chunks.append(text[start:].strip())
+            break
             
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    return chunks
+        # Look for clean split points (newline, sentence end, or space) in the last 150 characters of the window
+        split_candidates = [
+            text.rfind('\n', start + chunk_size - 100, end),
+            text.rfind('. ', start + chunk_size - 100, end),
+            text.rfind(' ', start + chunk_size - 50, end)
+        ]
+        
+        split_point = -1
+        for candidate in split_candidates:
+            if candidate != -1:
+                split_point = candidate
+                break
+                
+        if split_point == -1:
+            split_point = end
+            
+        chunks.append(text[start:split_point].strip())
+        
+        # Advance the window back by overlap amount
+        start = split_point - overlap
+        if start < 0:
+            start = 0
+        # Prevent potential infinite loops if split_point doesn't advance
+        if start >= split_point:
+            start = split_point + 1
+            
+    return [c for c in chunks if c.strip()]
 
 def load_text_from_document(document):
     if isinstance(document, (str, Path)):
@@ -197,7 +214,23 @@ def query_processing(query, vector_store):
     else:
         query_embeddings = query_embedding.tolist() if hasattr(query_embedding, "tolist") else query_embedding
         
-    return vector_store.query(query_embeddings=query_embeddings, n_results=3)
+    try:
+        all_ids = vector_store.get()['ids']
+        total_chunks = len(all_ids)
+    except Exception:
+        total_chunks = 3
+        
+    if total_chunks == 0:
+        return {"documents": []}
+        
+    # If the document is small to medium (<= 25 chunks), retrieve all chunks to give the LLM full context.
+    # Otherwise, retrieve the top 10 relevant chunks.
+    n_results = total_chunks if total_chunks <= 25 else 10
+    n_results = min(n_results, total_chunks)
+    if n_results <= 0:
+        n_results = 1
+        
+    return vector_store.query(query_embeddings=query_embeddings, n_results=n_results)
 
 def clean_context_text(text):
     cleaned = re.sub(r"[\r\n]+", " ", text)
@@ -229,7 +262,7 @@ def call_groq_api(prompt, temperature=0.0):
         "Content-Type": "application/json"
     }
     
-    models = ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
     last_err = None
     for model in models:
         try:
@@ -255,7 +288,7 @@ def generate_llm_response(prompt, temperature=0.0, timeout=30):
     # Tier 1: Try Groq API
     if os.getenv("GROQ_API_KEY"):
         try:
-            return call_groq_api(prompt, temperature=temperature)
+            return call_groq_api(prompt, temperature=temperature), "LLM Groq API"
         except Exception as e:
             print(f"Groq API failed: {e}. Falling back to local Ollama.")
     else:
@@ -276,20 +309,26 @@ def generate_llm_response(prompt, temperature=0.0, timeout=30):
             timeout=timeout
         )
         response.raise_for_status()
-        return response.json()["response"].strip()
+        return response.json()["response"].strip(), "Ollama (Local Fallback)"
     except Exception as e:
         raise RuntimeError(f"Ollama local service failed or not reachable: {e}")
 
-def context_retrieval(query, context):
+def context_retrieval(query, context, ingested_data=None):
     """
     Routes context + query to LLM (Groq or Ollama) with a stricter system instruction format
     to prevent it from ignoring the document content.
     """
-    prompt = f"""Instructions: You are a strict factual assistant. Answer the Question based ONLY on the provided Context. 
-If the context does not contain the answer, reply exactly with: "I don't know based on the given information." 
-Do not extrapolate or use outside knowledge.
+    metadata_str = ""
+    if ingested_data:
+        file_name = ingested_data.get("file_name", "Uploaded Document")
+        total_pages = ingested_data.get("total_pages", "N/A")
+        total_chunks = len(ingested_data.get("chunks", []))
+        metadata_str = f"Document Metadata:\n- File Name: {file_name}\n- Total Pages: {total_pages}\n- Total Chunks: {total_chunks}\n\n"
 
-Context: {context}
+    prompt = f"""Instructions: You are a helpful and factual document assistant. Answer the Question based on the provided Context and Document Metadata.
+Be direct and detailed in your answer. If the provided information does not contain the answer, reply with: "I don't know based on the given information."
+
+{metadata_str}Context: {context}
 
 Question: {query}
 Answer:"""
@@ -298,7 +337,7 @@ Answer:"""
         return generate_llm_response(prompt, temperature=0.0, timeout=30)
     except Exception as e:
         print(f"LLM generation failed ({e}). Attempting internal fallback scoring algorithm.")
-        return build_fallback_answer(query, context)
+        return build_fallback_answer(query, context), "Local Fallback (Heuristic Scoring)"
 
 def build_fallback_answer(query, context):
     if not context:
@@ -336,7 +375,15 @@ def ingest_document(document):
     embeddings = embedding_generation(chunks)
     vector_store = vector_store_creation(chunks, embeddings)
     
+    if hasattr(document, "name"):
+        file_name = document.name
+    elif isinstance(document, (str, Path)):
+        file_name = Path(document).name
+    else:
+        file_name = "Uploaded Document"
+        
     return {
+        "file_name": file_name,
         "total_pages": total_pages,
         "chunks": chunks,
         "collection_name": "document_embeddings",
@@ -348,17 +395,14 @@ def answer_query(ingested_data, query):
     Queries the vector store and gets context to retrieve the answer.
     """
     if not ingested_data:
-        return "Please upload a document first."
+        return "Please upload a document first.", "System Info"
         
     collection_name = ingested_data.get("collection_name", "document_embeddings")
     collection = CHROMA_CLIENT.get_or_create_collection(collection_name)
     results = query_processing(query, collection)
     context = extract_context(results)
     
-    if not context.strip():
-        return "I don't know based on the given information."
-        
-    return context_retrieval(query, context)
+    return context_retrieval(query, context, ingested_data)
 
 def build_fallback_summary(text):
     """
@@ -403,12 +447,13 @@ def build_fallback_summary(text):
         
     return " ".join(summary_parts)
 
+# Summarize the document Function
 def summarize_document(ingested_data):
     """
     Summarizes the ingested document using LLM (Groq or Ollama), with a heuristic fallback.
     """
     if not ingested_data or not ingested_data.get("text"):
-        return "No document text available to summarize."
+        return "No document text available to summarize.", "System Info"
         
     text = ingested_data["text"]
     
@@ -420,7 +465,6 @@ def summarize_document(ingested_data):
         input_text = text
 
     prompt = f"""Instructions: Provide a concise, comprehensive summary of the following document. Highlight the main topics, key points, and overall conclusion.
-    
 Document:
 {input_text}
 
@@ -430,7 +474,7 @@ Summary:"""
         return generate_llm_response(prompt, temperature=0.3, timeout=45)
     except Exception as e:
         print(f"LLM summarization failed ({e}). Using fallback extractive summary.")
-        return build_fallback_summary(text)
+        return build_fallback_summary(text), "Fallback (Extractive Heuristics)"
 
 # Maintain the pipeline
 def pipeline(document, query=None):

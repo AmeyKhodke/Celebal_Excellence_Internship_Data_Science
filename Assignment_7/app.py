@@ -1,6 +1,59 @@
 import streamlit as st
 import rag_service
 
+def render_source_tag(source):
+    if not source:
+        return
+    
+    # Select colors and icons based on the source
+    if "groq" in source.lower():
+        color = "#00FF66"  # Vibrant neon green
+        bg_color = "rgba(0, 255, 102, 0.08)"
+        border_color = "rgba(0, 255, 102, 0.25)"
+        icon = "⚡"
+        badge_text = "LLM Groq API"
+    elif "ollama" in source.lower():
+        color = "#3399FF"  # Soft sky blue
+        bg_color = "rgba(51, 153, 255, 0.08)"
+        border_color = "rgba(51, 153, 255, 0.25)"
+        icon = "🦙"
+        badge_text = source
+    elif "heuristic" in source.lower() or "scoring" in source.lower() or "fallback" in source.lower():
+        color = "#FF9900"  # Amber/orange
+        bg_color = "rgba(255, 153, 0, 0.08)"
+        border_color = "rgba(255, 153, 0, 0.25)"
+        icon = "⚙️"
+        badge_text = source
+    else:
+        color = "#FF4444"  # Coral red
+        bg_color = "rgba(255, 68, 68, 0.08)"
+        border_color = "rgba(255, 68, 68, 0.25)"
+        icon = "ℹ️"
+        badge_text = source
+
+    html = f"""
+    <div style="
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        background-color: {bg_color};
+        color: {color};
+        border: 1px solid {border_color};
+        font-weight: 500;
+        margin-top: 8px;
+        margin-bottom: 2px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        font-family: 'Inter', -apple-system, sans-serif;
+    ">
+        <span>{icon}</span>
+        <span>Source: <strong>{badge_text}</strong></span>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 app_title = "RAG Application Dashboard"
 app_description = "This dashboard allows users to interact with the RAG application through a chat interface."
 
@@ -63,10 +116,11 @@ if clear_clicked:
 if summarize_clicked and st.session_state["ingested"] is not None:
     with st.spinner("Reading document and summarizing..."):
         try:
-            summary = rag_service.summarize_document(st.session_state["ingested"])
+            summary, source = rag_service.summarize_document(st.session_state["ingested"])
             st.session_state["chat_history"].append({
                 "user": "Summarize the whole document.",
-                "bot": summary
+                "bot": summary,
+                "source": source
             })
             st.rerun()
         except Exception as e:
@@ -78,6 +132,8 @@ for chat in st.session_state["chat_history"]:
         st.write(chat["user"])
     with st.chat_message("assistant"):
         st.write(chat["bot"])
+        if "source" in chat and chat["source"]:
+            render_source_tag(chat["source"])
 
 user_input = st.chat_input("Type your message here...")
 
@@ -92,26 +148,30 @@ if user_input:
         response = "Please upload a document before asking a question."
         with st.chat_message("assistant"):
             st.write(response)
-        st.session_state["chat_history"].append({"user": user_query, "bot": response})
+        st.session_state["chat_history"].append({"user": user_query, "bot": response, "source": "System Info"})
     elif any(kw in user_query.lower() for kw in SUMMARY_KEYWORDS):
         with st.chat_message("assistant"):
             with st.spinner("Reading the whole document to summarize it (this may take a bit)..."):
                 try:
-                    response = rag_service.summarize_document(st.session_state["ingested"])
+                    response, source = rag_service.summarize_document(st.session_state["ingested"])
                     st.write(response)
+                    render_source_tag(source)
                 except Exception as e:
                     response = f"Error during summary extraction: {e}"
+                    source = "Error"
                     st.write(response)
-                st.session_state["chat_history"].append({"user": user_query, "bot": response})
+                st.session_state["chat_history"].append({"user": user_query, "bot": response, "source": source})
                 st.rerun()
     else:
         with st.chat_message("assistant"):
             with st.spinner("Generating answer..."):
                 try:
-                    response = rag_service.answer_query(st.session_state["ingested"], user_query)
+                    response, source = rag_service.answer_query(st.session_state["ingested"], user_query)
                     st.write(response)
+                    render_source_tag(source)
                 except Exception as e:
                     response = f"Error retrieving answer: {e}"
+                    source = "Error"
                     st.write(response)
-                st.session_state["chat_history"].append({"user": user_query, "bot": response})
+                st.session_state["chat_history"].append({"user": user_query, "bot": response, "source": source})
                 st.rerun()

@@ -1,0 +1,59 @@
+# Python-related ignore
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IDEs / Editors
+.vscode/
+.idea/
+.lh/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Datasets and Large Data Files (Crucial to ignore due to GitHub file size limits)
+Dataset/
+Dataset/**
+!Dataset/.gitkeep
+
+# Trained Models and Artifacts (heavy binaries)
+models/*.pkl
+models/*.h5
+models/*.json
+
+# Logs
+logs/
+*.log
